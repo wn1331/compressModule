@@ -1,0 +1,175 @@
+= Time series compression library, based on the Facebook's Gorilla paper
+:source-language: java
+
+ifdef::env-github[]
+[link=https://travis-ci.org/burmanm/gorilla-tsc]
+image::https://travis-ci.org/burmanm/gorilla-tsc.svg?branch=master[Build Status,70,18]
+[link=https://maven-badges.herokuapp.com/maven-central/fi.iki.yak/compression-gorilla]
+image::https://img.shields.io/maven-central/v/fi.iki.yak/compression-gorilla.svg[Maven central]
+endif::[]
+
+== Introduction
+
+This is Java based implementation of the compression methods described in the paper link:http://www.vldb.org/pvldb/vol8/p1816-teller.pdf["Gorilla: A Fast, Scalable, In-Memory Time Series Database"]. For explanation on how the compression methods work, read the excellent paper.
+
+In comparison to the original paper, this implementation allows using both integer values (`long`) as well as
+floating point values (`double`), both 64 bit in length.
+
+Versions 1.x and 2.x are not compatible with each other due to small differences to the stored array. Versions 2.x
+will support reading and storing older format also, see usage for more details.
+
+== Usage
+
+The included tests are a good source for examples.
+
+=== Maven
+
+[source, xml]
+----
+    <dependency>
+        <groupId>fi.iki.yak</groupId>
+        <artifactId>compression-gorilla</artifactId>
+    </dependency>
+----
+
+You can find latest version from the maven logo link above.
+
+=== Compressing
+
+To compress in the older 1.x format, use class ``Compressor``. For 2.x, use ``GorillaCompressor`` (recommended).
+``LongArrayOutput`` is also recommended compared to ``ByteBufferBitOutput`` because of performance. One can supply
+alternative predictor to the ``GorillaCompressor`` if required. One such implementation is included,
+``DifferentialFCM`` that provides better compression ratio for some data patterns.
+
+[source, java]
+----
+long now = LocalDateTime.now(ZoneOffset.UTC).truncatedTo(ChronoUnit.HOURS)
+        .toInstant(ZoneOffset.UTC).toEpochMilli();
+
+LongArrayOutput output = new LongArrayOutput();
+GorillaCompressor c = new GorillaCompressor(now, output);
+----
+
+Compression class requires a block timestamp and an implementation of `BitOutput` interface.
+
+[source, java]
+----
+c.addValue(long, double);
+----
+
+Adds a new floating-point value to the time series. If you wish to store only long values, use `c.addValue(long,
+long)`, however do `not` mix these in the same series.
+
+After the block is ready, remember to call:
+
+[source, java]
+----
+c.close();
+----
+
+which flushes the remaining data to the stream and writes closing information.
+
+=== Decompressing
+
+To decompress from the older 1.x format, use class ``Decompressor``. For 2.x, use ``GorillaDecompressor`` (recommended).
+``LongArrayInput`` is also recommended compared to ``ByteBufferBitInput`` because of performance if the 2.x
+format was used to compress the time series. If the original compressor used different predictor than
+``LastValuePredictor`` it must be defined in the constructor.
+
+[source, java]
+----
+LongArrayInput input = new LongArrayInput(byteBuffer);
+GorillaDecompressor d = new GorillaDecompressor(input);
+----
+
+To decompress a stream of bytes, supply `GorillaDecompressor` with a suitable implementation of `BitInput` interface.
+ The LongArrayInput allows to decompress a long array or existing `ByteBuffer` presentation with 8 byte word
+ length.
+
+[source, java]
+----
+Pair pair = d.readPair();
+----
+
+Requesting next pair with `readPair()` returns the following series value or a `null` once the series is completely
+read. The pair is a simple placeholder object with `getTimestamp()` and `getDoubleValue()` or `getLongValue()`.
+
+== Performance
+
+The following performance in reached in a Linux VM running on VMware Player in Windows 8.1 host. i7 2600K at 4GHz.
+The benchmark used is the ``EncodingBenchmark``. These results should not be directly compared to other
+implementations unless similar dataset is used.
+
+Results are in millions of datapoints (timestamp + value) pairs per second. The values in this benchmark are
+in doubles (performance with longs is slightly higher, around ~2-3M/s).
+
+.Compression
+|===
+|GorillaCompressor (2.0.0) |Compressor (1.1.0)
+
+|83.5M/s (~1.34GB/s)
+|31.2M/s (~499MB/s)
+|===
+
+
+.Decompression
+|===
+|GorillaDecompressor (2.0.0) |Decompressor (1.1.0)
+
+|77,9M/s (~1.25GB/s)
+|51.4M/s (~822MB/s)
+|===
+
+Most of the differences in decompression / compression speed between versions come from implementation changes and
+not from the small changes to the output format.
+
+== Roadmap
+
+There were few things I wanted to get to 2.0.0, but had to decide against due to lack of time. I will implement these
+ later with potentially some breaking API changes:
+
+ * Support timestamp only compressions (2.2.x)
+ * Include ByteBufferLongOutput/ByteBufferLongInput in the package (2.2.x)
+ * Move bit operations to inside the GorillaCompressor/GorillaDecompressor to allow easier usage with
+ other allocators (2.2.x)
+
+== Internals
+
+=== Differences to the original paper
+
+* Maximum number of leadingZeros is stored with 6 bits to allow up to 63 leading zeros, which are necessary when
+storing long values. (>= 2.0.0)
+* Timestamp delta-of-delta are stored by first turning them with ZigZag encoding to positive integers and then
+reduced by one to fit in the necessary bits. In the decoding phase all the values are incremented by one to fetch the
+ original value. (>= 2.0.0)
+* The compressed blocks are created with a 27 bit delta header (unlike in the original paper, which uses a 14 bit delta
+  header). This allows to use up to one day block size using millisecond precision. (>= 1.0.0)
+
+=== Data structure
+
+Values must be inserted in the increasing time order, out-of-order insertions are not supported.
+
+The included ByteBufferBitInput and ByteBufferBitOutput classes use a big endian order for the data.
+
+== Contributing
+
+File an issue and/or send a pull request.
+
+=== License
+
+....
+   Copyright 2016-2018 Michael Burman and/or other contributors.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+....
+
